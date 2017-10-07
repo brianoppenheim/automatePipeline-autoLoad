@@ -38,6 +38,9 @@ import java.util.Enumeration;
 import java.util.List;
 import java.util.Vector;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileReader;
+import java.io.FilenameFilter;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
@@ -59,6 +62,10 @@ import modules.Params;
 import com.sun.jna.platform.win32.WinDef;
 import com.sun.jna.platform.win32.User32;
 
+/**
+ * @authors jbelmont, njooma
+ *
+ */
 @SuppressWarnings("serial")
 public class MainForm extends JFrame implements Form {
 
@@ -71,7 +78,7 @@ public class MainForm extends JFrame implements Form {
 	private java.awt.Color _mainColor;
 	private int _cores;
 	private Vector<String> _samplesToRun = new Vector<String>();
-	
+	private boolean maxQuant = false;
 	public MainForm() {
 		//GUI Basics
 		super("AutoLoad");
@@ -280,22 +287,26 @@ public class MainForm extends JFrame implements Form {
 	/**
 	 * This method loads the sample into the database
 	 * by calling all the appropriate methods.
-	 */
+	 */  
 	private void loadSample() {
 		this.log("Processing sample "+_sample);
 		try {
-			this.deleteTempFiles();
 			_dataDir = _params.getGlobalParam("LOADER.BaseFolder", "");
+			isMaxQuant();
+			this.deleteTempFiles();
 			this.log("    Unzipping data...");
 			this.unzip7zip(Paths.get(_dataDir, _sample+".zip"));
 			this.log("    Gathering information from text file...");
 			this.readAndMakeSetupFile();
-			this.log("    Java .OUT Extraction and Filtering...");
-			this.extractOut();
-			this.log("    Logistic model setup...");
-			this.setupLogisticModel();
-			this.log("    PhosLocalization...");
-			this.phosQuant();
+			if(!maxQuant){
+				this.log("Entered Mascot methods");
+				this.log("    Java .OUT Extraction and Filtering...");
+				this.extractOut();
+				this.log("    Logistic model setup...");
+				this.setupLogisticModel();	
+				this.log("    PhosLocalization...");
+				this.phosQuant();	
+			}
 			this.log("    Beginning FileMaker load...");
 			this.loadFileMaker();
 			this.log("    Deleting files...");
@@ -303,6 +314,7 @@ public class MainForm extends JFrame implements Form {
 			Paths.get(_dataDir, _sample).toFile().delete();
 			this.log("Finished loading "+_sample);
 			this.updateFinishedSampleList("#");
+			this.maxQuant = false;
 			this.setBusy(false);
 		} catch (Exception e) {
 			e.printStackTrace();
@@ -314,6 +326,27 @@ public class MainForm extends JFrame implements Form {
 		}
 	}
 	
+	private void isMaxQuant(){
+		String filePath = _dataDir + _sep + _sample + ".txt";
+		try {
+			BufferedReader pepData = new BufferedReader(new FileReader(new File(filePath)));
+			String line = pepData.readLine();
+			while((line = pepData.readLine()) != null){
+				if(line.equals("SearchEngine = X")){
+					maxQuant = true;
+					this.log("This sample is registered as MaxQuant");
+				}
+			}
+			pepData.close();
+			
+		} catch (FileNotFoundException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+	}
 	/**
 	 * This method creates the temp folder if it doesn't already exist. It then deletes the temporary files & creates new empty folders
 	 */
@@ -325,7 +358,7 @@ public class MainForm extends JFrame implements Form {
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
-		String[] tempSubDir = {"cleanseq", "dta", "phosloca", "out", "peak", "setup", "LogisticScoreInput", "Validations", "silac", "iTRAQ"};
+		String[] tempSubDir = {"cleanseq", "dta", "phosloca", "out", "peak", "setup", "LogisticScoreInput", "Validations", "silac", "iTRAQ", "MaxQuant"};
 		for (String subDir:tempSubDir) {
 			try {
 				Path dir = Paths.get(tempDir, subDir);
@@ -349,89 +382,84 @@ public class MainForm extends JFrame implements Form {
 	}
 	
 	//deprecated--check the integrity of the zip file before opening
-	private boolean isValidZip(File file) {
-	    ZipFile zipfile = null;
-	    ZipInputStream zis = null;
-	    try {
-	        zipfile = new ZipFile(file);
-	        zis = new ZipInputStream(new FileInputStream(file));
-	        ZipEntry ze = zis.getNextEntry();
-	        if(ze == null) {
-	            return false;
-	        }
-	        while(ze != null) {
-	            // if it throws an exception fetching any of the following then the file is corrupt
-	            zipfile.getInputStream(ze);
-	            ze.getCrc();
-	            ze.getCompressedSize();
-	            ze.getName();
-	            ze = zis.getNextEntry();
-	        } 
-	        return true;
-	    } catch (ZipException e) {
-	        return false;
-	    } catch (IOException e) {
-	        return false;
-	    } finally {
-	        try {
-	            if (zipfile != null) {
-	                zipfile.close();
-	                zipfile = null;
-	            }
-	        } catch (IOException e) {
-	            return false;
-	        } try {
-	            if (zis != null) {
-	                zis.close();
-	                zis = null;
-	            }
-	        } catch (IOException e) {
-	            return false;
-	        }
-
-	    }
-	}
-	
-	// deprecated--use unzip7zip instead
-	private void unzip(Path file) throws IOException {
-		this.pause("Unzipping file");
-		ZipFile zipFile = new ZipFile(file.toString());
-		Path targetDir = Paths.get(_dataDir, _sample);
-		Files.createDirectories(Paths.get(targetDir.toString(), _sample));
-		@SuppressWarnings("unchecked")
-		Enumeration<ZipEntry> entries = (Enumeration<ZipEntry>) zipFile.entries();
-		while(entries.hasMoreElements()) {
-			ZipEntry entry = entries.nextElement();
-			if (entry.isDirectory()) {
-				Files.deleteIfExists(Paths.get(entry.getName()));
-				Files.createDirectory(Paths.get(entry.getName()));
-				continue;
-			}
-			InputStream in = zipFile.getInputStream(entry);
-			Files.deleteIfExists(Paths.get(targetDir.toString(), entry.getName()));
-			Files.createFile(Paths.get(targetDir.toString(), entry.getName()));
-			OutputStream out = Files.newOutputStream(Paths.get(targetDir.toString(), entry.getName()));
-			byte[] buffer = new byte[1024];
-	    	int len;
-	    	while((len = in.read(buffer)) >= 0) {
-	    		out.write(buffer, 0, len);
-	    	}
-    		in.close();
-	    	out.close();
-		}
-		zipFile.close();
-	}
+//	private boolean isValidZip(File file) {
+//	    ZipFile zipfile = null;
+//	    ZipInputStream zis = null;
+//	    try {
+//	        zipfile = new ZipFile(file);
+//	        zis = new ZipInputStream(new FileInputStream(file));
+//	        ZipEntry ze = zis.getNextEntry();
+//	        if(ze == null) {
+//	            return false;
+//	        }
+//	        while(ze != null) {
+//	            // if it throws an exception fetching any of the following then the file is corrupt
+//	            zipfile.getInputStream(ze);
+//	            ze.getCrc();
+//	            ze.getCompressedSize();
+//	            ze.getName();
+//	            ze = zis.getNextEntry();
+//	        } 
+//	        return true;
+//	    } catch (ZipException e) {
+//	        return false;
+//	    } catch (IOException e) {
+//	        return false;
+//	    } finally {
+//	        try {
+//	            if (zipfile != null) {
+//	                zipfile.close();
+//	                zipfile = null;
+//	            }
+//	        } catch (IOException e) {
+//	            return false;
+//	        } try {
+//	            if (zis != null) {
+//	                zis.close();
+//	                zis = null;
+//	            }
+//	        } catch (IOException e) {
+//	            return false;
+//	        }
+//
+//	    }
+//	}
+//	
+//	// deprecated--use unzip7zip instead
+//	private void unzip(Path file) throws IOException {
+//		this.pause("Unzipping file");
+//		ZipFile zipFile = new ZipFile(file.toString());
+//		Path targetDir = Paths.get(_dataDir, _sample);
+//		Files.createDirectories(Paths.get(targetDir.toString(), _sample));
+//		@SuppressWarnings("unchecked")
+//		Enumeration<ZipEntry> entries = (Enumeration<ZipEntry>) zipFile.entries();
+//		while(entries.hasMoreElements()) {
+//			ZipEntry entry = entries.nextElement();
+//			if (entry.isDirectory()) {
+//				Files.deleteIfExists(Paths.get(entry.getName()));
+//				Files.createDirectory(Paths.get(entry.getName()));
+//				continue;
+//			}
+//			InputStream in = zipFile.getInputStream(entry);
+//			Files.deleteIfExists(Paths.get(targetDir.toString(), entry.getName()));
+//			Files.createFile(Paths.get(targetDir.toString(), entry.getName()));
+//			OutputStream out = Files.newOutputStream(Paths.get(targetDir.toString(), entry.getName()));
+//			byte[] buffer = new byte[1024];
+//	    	int len;
+//	    	while((len = in.read(buffer)) >= 0) {
+//	    		out.write(buffer, 0, len);
+//	    	}
+//    		in.close();
+//	    	out.close();
+//		}
+//		zipFile.close();
+//	}
 	
 	private void unzip7zip(Path file){
 		this.pause("Unzipping files");
 		this.log("          Unzipping files...");
 		String cmd = null;
 		Path targetDir = Paths.get(_dataDir, _sample);
-		//try{
-		//	Files.createDirectories(Paths.get(targetDir.toString(), _sample));
-		//} catch (IOException e){
-		//	e.printStackTrace();
-		//}
 		cmd = "\""+_params.getGlobalParam("LOADER.7ziplocation", "C:\\Program Files\\7zip\\7za.exe")+ "\" x -y " + "\""+ file.toString() + "\"" +" -o" + "\""+ targetDir + "\"";
 		ProcessBuilder builder = null;
 		builder = new ProcessBuilder(_params.getGlobalParam("LOADER.7ziplocation", "C:\\Program Files\\7zip\\7za.exe"), "x","-y", "\""+file.toString()+"\"", "-o"+"\""+targetDir.toString()+"\""); //no space between -o switch and outpath. modified to add "-y" switch on 130912 to suppress overwrite prompt
@@ -465,11 +493,55 @@ public class MainForm extends JFrame implements Form {
 			System.err.println("Unzipping file was interrupted");
 			e.printStackTrace();
 		}
-		
+		//If we're doing MQ, copy over some MQ specific files
+		if(maxQuant){
+		try {
+			//We've just unzipped the zip folder in Loader.Root, and we've created the folder C:\Data\SampleName
+			//We want to extract the 4 MaxQuant output files from this directory, which we do below.
+			//We do this by going into the C:\\Data, then the sample name folder itself, where there exist
+			//several experiment files (.raw, .mzxml, etc) and a sample folder again with the same name
+			// (C:\Data\sampleName\sampleName). DTAs and the 4 MQ files live here. We extract them
+			this.log("Transferring relevant MQ files to temp folder for import to FileMaker");
+			Files.copy(Paths.get(_params.getGlobalParam("LOADER.Root", ""), _sample + _sep +  _sample + _sep + "FMImportparameters.txt"),
+					Paths.get(_params.getGlobalParam("LOADER.TempFolder", ""), "MaxQuant" + _sep + "FMImportparameters.txt"), REPLACE_EXISTING);
+			Files.copy(Paths.get(_params.getGlobalParam("LOADER.Root", ""), _sample + _sep +  _sample + _sep + "FMImportproteingroups.txt"),
+					Paths.get(_params.getGlobalParam("LOADER.TempFolder", ""), "MaxQuant" + _sep + "FMImportproteingroups.txt"), REPLACE_EXISTING); 
+			Files.copy(Paths.get(_params.getGlobalParam("LOADER.Root", ""), _sample + _sep + _sample + _sep + "FMImportmsms.txt"),
+					Paths.get(_params.getGlobalParam("LOADER.TempFolder", ""), "MaxQuant" + _sep + "FMImportmsms.txt"), REPLACE_EXISTING); 
+			Files.copy(Paths.get(_params.getGlobalParam("LOADER.Root", ""), _sample + _sep + _sample + _sep + "FMImportsummary.txt"),
+					Paths.get(_params.getGlobalParam("LOADER.TempFolder", ""), "MaxQuant" + _sep + "FMImportsummary.txt"), REPLACE_EXISTING); 
+			MaxQuantDTATransfer();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+		}
 		this.logNNL("done!");
 	}
 	
-	private void readAndMakeSetupFile() throws IOException, InterruptedException, AutoLoadException, HeadlessException, AWTException, UnsupportedFlavorException {
+	private void MaxQuantDTATransfer(){
+			this.log("DTAs are being transferred to the temp folder");
+	        File file = new File( _dataDir + _sep + _sample + _sep + _sample );
+	        File[] files = file.listFiles();
+
+	        String dtaFolder = _params.getGlobalParam("Loader.TempFolder", "")+_sep + "dta" +_sep;
+	        for(File dta : files) {
+	        	if(dta.toString().toLowerCase().endsWith(".dta")){
+	            try {
+	            	String filePath = dta.toString();
+	            	String fileName = filePath.substring(filePath.lastIndexOf("\\") + 1, filePath.lastIndexOf(".dta") - 1);
+					Files.copy(dta.toPath(),
+					    (new File(dtaFolder + fileName)).toPath(),
+					    StandardCopyOption.REPLACE_EXISTING);
+				} catch (IOException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+	        	}
+	        }
+	}
+	
+	private void readAndMakeSetupFile() throws IOException, InterruptedException,
+	AutoLoadException, HeadlessException, AWTException, UnsupportedFlavorException {
 		this.pause("Making setup file");
 		//Read the text file
 		Path txt = Paths.get(_dataDir, _sample+".txt");
@@ -500,7 +572,7 @@ public class MainForm extends JFrame implements Form {
 		}
 		
 		//Create the setup file
-		Path setupFile = Paths.get(_params.getGlobalParam("LOADER.TempFolder", "C:\\temp"), "setup", "loadParameterSetup.txt");
+		Path setupFile = Paths.get(_params.getGlobalParam("LOADER.TempFolder", "E:\\temp"), "setup", "loadParameterSetup.txt");
 		this.log("Setup file: " + setupFile);
 		Vector<String> toWrite = new Vector<String>();
 		toWrite.add("--username--"); toWrite.add(_userName);
@@ -519,10 +591,10 @@ public class MainForm extends JFrame implements Form {
 		toWrite.add("--nPathSeqPro--"); toWrite.add(zipPath);
 		toWrite.add("--searchEngine--"); toWrite.add(_searchEngine);
 		toWrite.add("--isSILAC--"); toWrite.add(this.getSILAC());
-		String[] fromRAW = this.getRAWInfo();
-		for (int i=0; i<fromRAW.length; i++) {
-			toWrite.add(fromRAW[i]);
-		}
+		//String[] fromRAW = this.getRAWInfo(); BMO deprecated 08/31/17 Art doesn't want the send keys
+//		for (int i=0; i<fromRAW.length; i++) {
+//			toWrite.add(fromRAW[i]);
+//		}
 		toWrite.add("--HPLCprotocal--"); toWrite.add(this.getSetupFileData(_sample+".met", "method unknown")); toWrite.add(this.getSetupFileData(_sample+".seq", "sequence unknown"));
 		toWrite.add("--P1P--"); toWrite.add(this.getSetupFileData(_sample+".p1p", ""));
 		toWrite.add("--P2P--"); toWrite.add(this.getSetupFileData(_sample+".p2p", ""));
@@ -572,9 +644,9 @@ public class MainForm extends JFrame implements Form {
 		String model;
 		if (_searchEngine.equals("M")) model = "mascot";
 		else model = "seqeust";
-		Path logisticFile = Paths.get(_params.getGlobalParam("LOADER.LogisticModel", "C:\\temp\\RLogisticScore"), "reduced.RData."+model);
-		Path target = Paths.get(_params.getGlobalParam("LOADER.LogisticModel", "C:\\temp\\RLogisticScore"), "reduced.RData");
-		this.log("Moving " + Paths.get(_params.getGlobalParam("LOADER.LogisticModel", "C:\\temp\\RLogisticScore"), "reduced.RData."+model).toString() + " to " + Paths.get(_params.getGlobalParam("LOADER.LogisticModel", "C:\\temp\\RLogisticScore"), "reduced.RData").toString());
+		Path logisticFile = Paths.get(_params.getGlobalParam("LOADER.LogisticModel", "E:\\temp\\RLogisticScore"), "reduced.RData."+model);
+		Path target = Paths.get(_params.getGlobalParam("LOADER.LogisticModel", "E:\\temp\\RLogisticScore"), "reduced.RData");
+		this.log("Moving " + Paths.get(_params.getGlobalParam("LOADER.LogisticModel", "E:\\temp\\RLogisticScore"), "reduced.RData."+model).toString() + " to " + Paths.get(_params.getGlobalParam("LOADER.LogisticModel", "C:\\temp\\RLogisticScore"), "reduced.RData").toString());
 		try {
 			Files.copy(logisticFile, target, StandardCopyOption.REPLACE_EXISTING);
 		} catch (IOException e) {
@@ -586,7 +658,7 @@ public class MainForm extends JFrame implements Form {
 	
 	private void phosQuant() throws IOException, InterruptedException, AutoLoadException {
 		this.pause("PhosLocalization");
-		Path tempDir = Paths.get(_params.getGlobalParam("LOADER.TempFolder", "C:\\temp"));
+		Path tempDir = Paths.get(_params.getGlobalParam("LOADER.TempFolder", "E:\\temp"));
 		Path msconv = Paths.get(_params.getGlobalParam("LOADER.msconvert", "C:\\Program Files\\ProteoWizard\\msconvert.exe"));
 		int numDTA = Paths.get(tempDir.toString(), "dta").toFile().list().length;
 		this.log("Looking for dtas in " + Paths.get(tempDir.toString(), "dta"));
@@ -680,11 +752,13 @@ public class MainForm extends JFrame implements Form {
 					//Process[] quantPID = new Process[_cores];
 					//for (int i=0; i<_cores; i++) {
 						//cmd = Paths.get(_appPath, "AQSILAC.exe").toString()+" $a=TRUE $c="+cfg.toString()+" $r="+raw.toString()+" $s="+splitDirs[i]+" $o="+silacDir.toString()+" $f=off"; // jmb removed 140729 -- VB quant software is deprecated
-					ProcessBuilder pb = new ProcessBuilder("Rscript", Paths.get(_params.getGlobalParam("LOADER.AutoFillFolder", "\\\\proteome\\Filemaker Associated Software\\Quantitation"), "AQSILAC.R").toString(), cfg.toString(), raw.toString(), outDir.toString(), silacDir.toString(), msconv.toString()); //change raw to mzXML path, splitDirs is outfile directory (E:/Temp/splitouts)
+					ProcessBuilder pb = new ProcessBuilder("Rscript", Paths.get(_params.getGlobalParam("LOADER.AutoFillFolder", "\\\\proteome\\Filemaker Associated Software\\Quantitation"), 
+							"AQSILAC.R").toString(), cfg.toString(), raw.toString(), outDir.toString(), silacDir.toString(), msconv.toString()); //change raw to mzXML path, splitDirs is outfile directory (E:/Temp/splitouts)
 					pb.redirectErrorStream(true);
 					Process p = pb.inheritIO().start();
 					p.waitFor();
-					//get Process to string for log
+						//get Process to string for log
+					// Andy sez: This doesn't work as intended, tries to print object instead of string
 					cmd = p.toString();
 					this.log("            "+cmd);
 					//	quantPID[i] = new ProcessBuilder(Paths.get(_appPath, "AQSILAC.exe").toString(), "$a=TRUE", "$c="+cfg.toString(), "$r="+raw.toString(), "$s="+splitDirs[i], "$o="+silacDir.toString(), "$f=off").start();
@@ -713,12 +787,13 @@ public class MainForm extends JFrame implements Form {
 	
 	private void loadFileMaker() throws IOException, InterruptedException, AutoLoadException, AWTException {
 		this.pause("Loading into FileMaker");
-		String cmd = "cmd /C "+Paths.get(_appPath, "startApp.bat").toString();
+		String cmd = "cmd /C "+Paths.get(_appPath, "startApp.bat").toString(); 
 		this.log("        "+cmd);
 		_mainPanel.setBackground(java.awt.Color.RED);
 		Thread.sleep(30000);
 		Process pFileMaker = new ProcessBuilder("cmd", "/C", Paths.get(_appPath, "startApp.bat").toString()).start();
 		Thread.sleep(10000);
+		//Maybe we can get rid of the robot dependency?
 		//Robot robot = new Robot();
 		WinDef.HWND window = null;
 		/*while (window == null) { jmb
@@ -817,125 +892,131 @@ public class MainForm extends JFrame implements Form {
 				if (config.startsWith("iTRAQ")) {
 					silac = 2;
 				}
+			
 			}
+			
+			//FLAG make mqpars and set TMT correctly
 		}
 		return Integer.toString(silac);
 	}
+	//FEATURE REQUEST: Implement extraction of ms method and tune metadata in R using xcms
 	
-	private String[] getRAWInfo() throws IOException, AutoLoadException, InterruptedException, AWTException, HeadlessException, UnsupportedFlavorException {
-		Path rawFile = Paths.get(_dataDir,_sample, _sample+".raw");
-		String msTune = "";
-		String msMethod = "";
-		String[] toReturn = new String[7];
-		if (Files.exists(rawFile)) {
-			this.log("        Reading data from RAW file...");
-			String cmd = _params.getGlobalParam("LOADER.QualBrowswer", "C:\\xcalibur\\system\\programs\\qualbrowser.exe") + " " + rawFile.toString();
-			this.log("            "+cmd);
-			_mainPanel.setBackground(java.awt.Color.RED);
-			Thread.sleep(30000);
-			Process p = new ProcessBuilder(_params.getGlobalParam("LOADER.QualBrowswer", "C:\\xcalibur\\system\\programs\\qualbrowser.exe"), rawFile.toString()).start();
-			//Wait for process to start up...
-			Long tdelay = Long.parseLong(_params.getGlobalParam("LOADER.QbrowserTimeDelay", "10000"));
-			Thread.sleep(tdelay);
-			//Start robot for send keys
-			Robot robot = new Robot();
-			WinDef.HWND window = null;
-			int i = 0;
-			/*while (window == null) { jmb commented out 131008
-				window = User32.INSTANCE.FindWindow("QualBrowser.exe", "Thermo Xcalibur Qual Browser");
-				if (i++ == 20) break;
-			}
-			User32.INSTANCE.SetForegroundWindow(window);
-			User32.INSTANCE.SetFocus(window);*/
-			Thread.sleep(10000);
-			/*if (!User32.INSTANCE.GetForegroundWindow().equals(window)) {	jmb commented out 131008
-				throw new AutoLoadException("getRAWInfo", "QualBrowser window could not be found");
-			}*/
-			this.log("				Retrieving data from Qual Browser");
-			//Gather information using sendkeys
-			//Send "alt"
-	    	robot.keyPress(KeyEvent.VK_ALT);
-	    	robot.keyRelease(KeyEvent.VK_ALT);
-			Thread.sleep(1000);
-			//Send "v"
-			robot.keyPress(KeyEvent.VK_V);
-	    	robot.keyRelease(KeyEvent.VK_V);
-	    	Thread.sleep(500);
-	    	//Send "r"
-			robot.keyPress(KeyEvent.VK_R);
-	    	robot.keyRelease(KeyEvent.VK_R);
-	    	Thread.sleep(500);
-	    	//Send "t"
-			robot.keyPress(KeyEvent.VK_T);
-	    	robot.keyRelease(KeyEvent.VK_T);
-	    	Thread.sleep(1000);
-	    	//Copy the MS tune parameter
-			robot.keyPress(KeyEvent.VK_CONTROL);
-			robot.keyPress(KeyEvent.VK_C);
-	    	robot.keyRelease(KeyEvent.VK_C);
-	    	robot.keyRelease(KeyEvent.VK_CONTROL);
-	    	msTune = (String) Toolkit.getDefaultToolkit().getSystemClipboard().getData(DataFlavor.stringFlavor);
-	    	//Send "alt"
-	    	robot.keyPress(KeyEvent.VK_ALT);
-	    	robot.keyRelease(KeyEvent.VK_ALT);
-			Thread.sleep(1000);
-			//Send "v"
-			robot.keyPress(KeyEvent.VK_V);
-	    	robot.keyRelease(KeyEvent.VK_V);
-	    	Thread.sleep(500);
-	    	//Send "r"
-			robot.keyPress(KeyEvent.VK_R);
-	    	robot.keyRelease(KeyEvent.VK_R);
-	    	Thread.sleep(500);
-	    	//Send "t"
-			robot.keyPress(KeyEvent.VK_M);
-	    	robot.keyRelease(KeyEvent.VK_M);
-	    	Thread.sleep(1000);
-	    	//Copy the MS method parameter
-			robot.keyPress(KeyEvent.VK_CONTROL);
-			robot.keyPress(KeyEvent.VK_C);
-	    	robot.keyRelease(KeyEvent.VK_C);
-	    	robot.keyRelease(KeyEvent.VK_CONTROL);
-	    	//Retrieve copied data from clipboard
-	    	msMethod = (String) Toolkit.getDefaultToolkit().getSystemClipboard().getData(DataFlavor.stringFlavor);
-	    	this.log("				Finished retrieving data from Qual Browser");
-	    	//Quit Qual Browser
-	    	//Send "alt-f"
-			robot.keyPress(KeyEvent.VK_ALT);
-			robot.keyPress(KeyEvent.VK_F);
-			robot.keyRelease(KeyEvent.VK_F);
-			robot.keyRelease(KeyEvent.VK_ALT);
-			Thread.sleep(1000);
-			//Send "x"
-			robot.keyPress(KeyEvent.VK_X);
-	    	robot.keyRelease(KeyEvent.VK_X);
-	    	Thread.sleep(2000);
-	    	p.waitFor();
-	    	_mainPanel.setBackground(_mainColor);
-	    	toReturn[0] = "--MSTune--";
-	    	DateFormat dateFormat = new SimpleDateFormat("MM/dd/YYYY HH:mm:ss a");
-	    	toReturn[1] = dateFormat.format(new Date());
-	    	toReturn[2] = msTune;
-	    	toReturn[3] = "--MSMeth--";
-	    	dateFormat = new SimpleDateFormat("MM/dd/YYYY");
-	    	toReturn[4] = _msMethod + " " + dateFormat.format(new Date());
-	    	toReturn[5] = _sample;
-	    	toReturn[6] = msMethod;
-	    	robot = null;	
-		}
-		else {
-	    	toReturn[0] = "--MSTune--";
-	    	DateFormat dateFormat = new SimpleDateFormat("MM/dd/YYYY HH:mm:ss a");
-	    	toReturn[1] = dateFormat.format(new Date());
-	    	toReturn[2] = "";
-	    	toReturn[3] = "--MSMeth--";
-	    	dateFormat = new SimpleDateFormat("MM/dd/YYYY");
-	    	toReturn[4] = _msMethod + " " + dateFormat.format(new Date());
-	    	toReturn[5] = _sample;
-	    	toReturn[6] = "";
-		}
-		return toReturn;
-	}
+//	private String[] getRAWInfo() throws IOException, AutoLoadException, 
+//	InterruptedException, AWTException, HeadlessException, UnsupportedFlavorException {
+//		Path rawFile = Paths.get(_dataDir,_sample, _sample+".raw");
+//		this.log("raw file path: " + rawFile.toString());
+//		String msTune = "";
+//		String msMethod = "";
+//		String[] toReturn = new String[7];
+//		if (Files.exists(rawFile)) {
+//			this.log("        Reading data from RAW file...");
+//			String cmd = _params.getGlobalParam("LOADER.QualBrowswer", "C:\\xcalibur\\system\\programs\\qualbrowser.exe") + " " + rawFile.toString();
+//			this.log("            "+cmd);
+//			_mainPanel.setBackground(java.awt.Color.RED);
+//			Thread.sleep(30000);
+//			Process p = new ProcessBuilder(_params.getGlobalParam("LOADER.QualBrowswer", "C:\\xcalibur\\system\\programs\\qualbrowser.exe"), rawFile.toString()).start();
+//			//Wait for process to start up...
+//			Long tdelay = Long.parseLong(_params.getGlobalParam("LOADER.QbrowserTimeDelay", "10000"));
+//			Thread.sleep(tdelay);
+//			//Start robot for send keys
+//			Robot robot = new Robot();
+//			WinDef.HWND window = null;
+//			int i = 0;
+//			/*while (window == null) { jmb commented out 131008
+//				window = User32.INSTANCE.FindWindow("QualBrowser.exe", "Thermo Xcalibur Qual Browser");
+//				if (i++ == 20) break;
+//			}
+//			User32.INSTANCE.SetForegroundWindow(window);
+//			User32.INSTANCE.SetFocus(window);*/
+//			Thread.sleep(10000);
+//			/*if (!User32.INSTANCE.GetForegroundWindow().equals(window)) {	jmb commented out 131008
+//				throw new AutoLoadException("getRAWInfo", "QualBrowser window could not be found");
+//			}*/
+//			this.log("				Retrieving data from Qual Browser");
+//			//Gather information using sendkeys
+//			//Send "alt"
+//	    	robot.keyPress(KeyEvent.VK_ALT);
+//	    	robot.keyRelease(KeyEvent.VK_ALT);
+//			Thread.sleep(1000);
+//			//Send "v"
+//			robot.keyPress(KeyEvent.VK_V);
+//	    	robot.keyRelease(KeyEvent.VK_V);
+//	    	Thread.sleep(500);
+//	    	//Send "r"
+//			robot.keyPress(KeyEvent.VK_R);
+//	    	robot.keyRelease(KeyEvent.VK_R);
+//	    	Thread.sleep(500);
+//	    	//Send "t"
+//			robot.keyPress(KeyEvent.VK_T);
+//	    	robot.keyRelease(KeyEvent.VK_T);
+//	    	Thread.sleep(1000);
+//	    	//Copy the MS tune parameter
+//			robot.keyPress(KeyEvent.VK_CONTROL);
+//			robot.keyPress(KeyEvent.VK_C);
+//	    	robot.keyRelease(KeyEvent.VK_C);
+//	    	robot.keyRelease(KeyEvent.VK_CONTROL);
+//	    	msTune = (String)Toolkit.getDefaultToolkit().getSystemClipboard().getData(DataFlavor.stringFlavor);
+//	    	//Send "alt"
+//	    	robot.keyPress(KeyEvent.VK_ALT);
+//	    	robot.keyRelease(KeyEvent.VK_ALT);
+//			Thread.sleep(1000);
+//			//Send "v"
+//			robot.keyPress(KeyEvent.VK_V);
+//	    	robot.keyRelease(KeyEvent.VK_V);
+//	    	Thread.sleep(500);
+//	    	//Send "r"
+//			robot.keyPress(KeyEvent.VK_R);
+//	    	robot.keyRelease(KeyEvent.VK_R);
+//	    	Thread.sleep(500);
+//	    	//Send "t"
+//			robot.keyPress(KeyEvent.VK_M);
+//	    	robot.keyRelease(KeyEvent.VK_M);
+//	    	Thread.sleep(1000);
+//	    	//Copy the MS method parameter
+//			robot.keyPress(KeyEvent.VK_CONTROL);
+//			robot.keyPress(KeyEvent.VK_C);
+//	    	robot.keyRelease(KeyEvent.VK_C);
+//	    	robot.keyRelease(KeyEvent.VK_CONTROL);
+//	    	//Retrieve copied data from clipboard
+//	    	msMethod = (String) Toolkit.getDefaultToolkit().getSystemClipboard().getData(DataFlavor.stringFlavor);
+//	    	this.log("				Finished retrieving data from Qual Browser");
+//	    	//Quit Qual Browser
+//	    	//Send "alt-f"
+//			robot.keyPress(KeyEvent.VK_ALT);
+//			robot.keyPress(KeyEvent.VK_F);
+//			robot.keyRelease(KeyEvent.VK_F);
+//			robot.keyRelease(KeyEvent.VK_ALT);
+//			Thread.sleep(1000);
+//			//Send "x"
+//			robot.keyPress(KeyEvent.VK_X);
+//	    	robot.keyRelease(KeyEvent.VK_X);
+//	    	Thread.sleep(2000);
+//	    	p.waitFor();
+//	    	_mainPanel.setBackground(_mainColor);
+//	    	toReturn[0] = "--MSTune--";
+//	    	DateFormat dateFormat = new SimpleDateFormat("MM/dd/YYYY HH:mm:ss a");
+//	    	toReturn[1] = dateFormat.format(new Date());
+//	    	toReturn[2] = msTune;
+//	    	toReturn[3] = "--MSMeth--";
+//	    	dateFormat = new SimpleDateFormat("MM/dd/YYYY");
+//	    	toReturn[4] = _msMethod + " " + dateFormat.format(new Date());
+//	    	toReturn[5] = _sample;
+//	    	toReturn[6] = msMethod;
+//	    	robot = null;	
+//		}
+//		else {
+//	    	toReturn[0] = "--MSTune--";
+//	    	DateFormat dateFormat = new SimpleDateFormat("MM/dd/YYYY HH:mm:ss a");
+//	    	toReturn[1] = dateFormat.format(new Date());
+//	    	toReturn[2] = "";
+//	    	toReturn[3] = "--MSMeth--";
+//	    	dateFormat = new SimpleDateFormat("MM/dd/YYYY");
+//	    	toReturn[4] = _msMethod + " " + dateFormat.format(new Date());
+//	    	toReturn[5] = _sample;
+//	    	toReturn[6] = "";
+//		}
+//		return toReturn;
+//	}
 	
 	private String getSetupFileData(String fileName, String def) throws IOException {
 		this.log("        Gathering information from "+fileName);
@@ -957,6 +1038,7 @@ public class MainForm extends JFrame implements Form {
 	
 	private void deleteFiles(Path source, String... filter) {
 		try {
+			
 			DirectoryStream<Path> files = Files.newDirectoryStream(source);
 			if (filter.length > 0) {
 				for (Path file:files) {
@@ -987,6 +1069,9 @@ public class MainForm extends JFrame implements Form {
 	 * This class sets the _isPaused boolean to 
 	 * either true or false depending on the
 	 * paused state.
+	 * 
+	 * @author njooma
+	 *
 	 */
 	private class PauseListener implements ActionListener {
 		public void actionPerformed(ActionEvent e) {
@@ -1023,5 +1108,6 @@ public class MainForm extends JFrame implements Form {
 			super("AutoLoadException caused in the method "+method+" because "+because);
 		}
 	}
+	
 
 }
